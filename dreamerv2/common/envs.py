@@ -298,6 +298,74 @@ class Crafter:
     return obs
 
 
+class Grafter:
+
+  def __init__(self, outdir=None, reward=True, seed=None):
+    import dreamerv2.grafter.grafter.wrapper
+    import crafter
+    self._env = dreamerv2.grafter.grafter.wrapper.GrafterWrapper(width=30, height=30, generator_seed=seed)
+    self._env = crafter.Recorder(
+        self._env, outdir,
+        save_stats=True,
+        save_video=False,
+        save_episode=False,
+    )
+    self._achievements = {
+        'collect_coal', 'collect_diamond', 'collect_drink', 'collect_iron', 'collect_sapling', 'collect_stone',
+        'collect_wood', 'defeat_skeleton', 'defeat_zombie', 'defeat_player', 'eat_cow', 'eat_plant', 'make_iron_pickaxe',
+        'make_iron_sword', 'make_stone_pickaxe', 'make_stone_sword', 'make_wood_pickaxe', 'make_wood_sword',
+        'place_furnace', 'place_plant', 'place_stone', 'place_table', 'wake_up'
+    }
+
+  @property
+  def obs_space(self):
+    spaces = {
+        'image': self._env.observation_space,
+        'reward': gym.spaces.Box(-np.inf, np.inf, (), dtype=np.float32),
+        'is_first': gym.spaces.Box(0, 1, (), dtype=np.bool),
+        'is_last': gym.spaces.Box(0, 1, (), dtype=np.bool),
+        'is_terminal': gym.spaces.Box(0, 1, (), dtype=np.bool),
+        'log_reward': gym.spaces.Box(-np.inf, np.inf, (), np.float32),
+    }
+    spaces.update({
+        f'log_achievement_{k}': gym.spaces.Box(0, 2 ** 31 - 1, (), np.int32)
+        for k in self._achievements})
+    return spaces
+
+  @property
+  def act_space(self):
+    return {'action': self._env.action_space}
+
+  def step(self, action):
+    image, reward, done, info = self._env.step(action['action'])
+    obs = {
+        'image': image,
+        'reward': reward,
+        'is_first': False,
+        'is_last': done,
+        'is_terminal': info['discount'] == 0,
+        'log_reward': info['reward'],
+    }
+    obs.update({
+        f'log_achievement_{k}': v
+        for k, v in info['achievements'].items()})
+    return obs
+
+  def reset(self):
+    obs = {
+        'image': self._env.reset(),
+        'reward': 0.0,
+        'is_first': True,
+        'is_last': False,
+        'is_terminal': False,
+        'log_reward': 0.0,
+    }
+    obs.update({
+        f'log_achievement_{k}': 0
+        for k in self._achievements})
+    return obs
+
+
 class Dummy:
 
   def __init__(self):

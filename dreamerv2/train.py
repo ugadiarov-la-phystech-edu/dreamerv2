@@ -91,6 +91,12 @@ def main():
       reward = bool(['noreward', 'reward'].index(task)) or mode == 'eval'
       env = common.Crafter(outdir, reward)
       env = common.OneHotAction(env)
+    elif suite == 'grafter':
+      assert config.action_repeat == 1
+      outdir = logdir / 'grafter' if mode == 'train' else None
+      reward = bool(['noreward', 'reward'].index(task)) or mode == 'eval'
+      env = common.Grafter(outdir, reward)
+      env = common.OneHotAction(env)
     else:
       raise NotImplementedError(suite)
     env = common.TimeLimit(env, config.time_limit)

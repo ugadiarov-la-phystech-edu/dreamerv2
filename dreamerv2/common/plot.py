@@ -112,6 +112,7 @@ def load_run(filename, indir, args):
       'atari': 1e6,
       'dmc': 1e4,
       'crafter': 1e4,
+      'grafter': 1e4
   }.get(task.split('_')[0], 1e5) if args.bins == -1 else args.bins
   if bins:
     borders = np.arange(0, xs.max() + 1e-8, bins)
