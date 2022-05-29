@@ -55,6 +55,13 @@ class GrafterWrapper(gym.Wrapper):
         if self.resize_shape:
             self.observation_space = gym.spaces.Box(0, 255, (*self.resize_shape, 3), dtype=np.uint8)
 
+    def _process_observation(self, observation):
+        observation = np.swapaxes(observation, 0, 2)
+        if self.resize_shape:
+            observation = cv2.resize(observation, dsize=self.resize_shape, interpolation=cv2.INTER_AREA)
+
+        return observation
+
     def _flatten_action_space(self):
         flat_action_mapping = []
         actions = []
@@ -103,11 +110,7 @@ class GrafterWrapper(gym.Wrapper):
         info['reward'] = reward
         info['discount'] = int(not done)
 
-        observation = np.swapaxes(observation, 0, 2)
-        if self.resize_shape:
-            observation = cv2.resize(observation, dsize=self.resize_shape, interpolation=cv2.INTER_AREA)
-
-        return observation, reward, done, info
+        return self._process_observation(observation), reward, done, info
 
     def reset(self):
         if self._level_id is None:
@@ -116,7 +119,7 @@ class GrafterWrapper(gym.Wrapper):
         else:
             reset_obs = self.env.reset(level_id=self._level_id)
 
-        return reset_obs
+        return self._process_observation(reset_obs)
 
     def render(self, size=None, mode="rgb_array", observer=0):
         frame = self.env.render(mode=mode, observer=observer)
