@@ -19,7 +19,8 @@ class GrafterWrapper(gym.Wrapper):
             generator_seed=100,
             player_observer_type="PlayerSprite2D",
             global_observer_type="GlobalSprite2D",
-            level_id=None
+            level_id=None,
+            resize_shape=(96, 96)
     ):
 
         current_file = Path(__file__).parent
@@ -51,7 +52,7 @@ class GrafterWrapper(gym.Wrapper):
 
         # flatten the action space
         self.action_space, self.flat_action_mapping = self._flatten_action_space()
-        self.resize_shape = (96, 96)
+        self.resize_shape = resize_shape
         if self.resize_shape:
             self.observation_space = gym.spaces.Box(0, 255, (*self.resize_shape, 3), dtype=np.uint8)
 
