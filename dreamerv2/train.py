@@ -53,6 +53,8 @@ def main():
   if config.precision == 16:
     from tensorflow.keras.mixed_precision import experimental as prec
     prec.set_policy(prec.Policy('mixed_float16'))
+    # import tensorflow.keras.mixed_precision as prec
+    # prec.set_global_policy(prec.Policy('mixed_float16'))
 
   train_replay = common.Replay(logdir / 'train_episodes', **config.replay)
   eval_replay = common.Replay(logdir / 'eval_episodes', **dict(
@@ -151,7 +153,7 @@ def main():
   train_dataset = iter(train_replay.dataset(**config.dataset))
   report_dataset = iter(train_replay.dataset(**config.dataset))
   eval_dataset = iter(eval_replay.dataset(**config.dataset))
-  agnt = agent.Agent(config, obs_space, act_space, step)
+  agnt = agent.TreeQNAgent(config, obs_space, act_space, step)
   train_agent = common.CarryOverState(agnt.train)
   train_agent(next(train_dataset))
   if (logdir / 'variables.pkl').exists():

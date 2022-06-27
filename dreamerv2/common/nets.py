@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensorflow.keras import layers as tfkl
 from tensorflow_probability import distributions as tfd
 from tensorflow.keras.mixed_precision import experimental as prec
+#import tensorflow.keras.mixed_precision as prec
 
 import common
 
@@ -91,7 +92,7 @@ class EnsembleRSSM(common.Module):
     # if is_first.any():
     prev_state, prev_action = tf.nest.map_structure(
         lambda x: tf.einsum(
-            'b,b...->b...', 1.0 - is_first.astype(x.dtype), x),
+            'b,b...->b...', 1 - is_first.astype(x.dtype), x),
         (prev_state, prev_action))
     prior = self.img_step(prev_state, prev_action, sample)
     x = tf.concat([prior['deter'], embed], -1)

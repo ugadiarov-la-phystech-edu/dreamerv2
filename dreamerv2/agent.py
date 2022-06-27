@@ -1,8 +1,12 @@
+import functools
+
 import tensorflow as tf
-from tensorflow.keras import mixed_precision as prec
+from tensorflow.keras.mixed_precision import experimental as prec
+#import tensorflow.keras.mixed_precision as prec
 
 import common
 import expl
+from dreamerv2.treeqn.models import TreeQNPolicy
 
 
 class Agent(common.Module):
@@ -330,5 +334,188 @@ class ActorCritic(common.Module):
         mix = 1.0 if self._updates == 0 else float(
             self.config.slow_target_fraction)
         for s, d in zip(self.critic.variables, self._target_critic.variables):
+          d.assign(mix * s + (1 - mix) * d)
+      self._updates.assign_add(1)
+
+
+class TreeQNAgent(common.Module):
+
+  def __init__(self, config, obs_space, act_space, step):
+    self.config = config
+    self.obs_space = obs_space
+    self.act_space = act_space['action']
+    self.step = step
+    self.tfstep = tf.Variable(int(self.step), tf.int64)
+    self.wm = WorldModel(config, obs_space, self.tfstep)
+    self._task_behavior = TreeQNTaskBehavior(config, obs_space, act_space, self.tfstep)
+    if config.expl_behavior == 'greedy':
+      self._expl_behavior = self._task_behavior
+    else:
+      self._expl_behavior = getattr(expl, config.expl_behavior)(
+          self.config, self.act_space, self.wm, self.tfstep,
+          lambda seq: self.wm.heads['reward'](seq['feat']).mode())
+
+  @tf.function
+  def policy(self, obs, state=None, mode='train'):
+    obs = tf.nest.map_structure(tf.tensor, obs)
+    tf.py_function(lambda: self.tfstep.assign(
+        int(self.step), read_value=False), [], [])
+    if state is None:
+      latent = self.wm.rssm.initial(len(obs['reward']))
+      action = tf.zeros((len(obs['reward']),) + self.act_space.shape)
+      state = latent, action
+    latent, action = state
+    embed = self.wm.encoder(self.wm.preprocess(obs))
+    sample = (mode == 'train') or not self.config.eval_state_mean
+    latent, _ = self.wm.rssm.obs_step(
+        latent, action, embed, obs['is_first'], sample)
+    feat = self.wm.rssm.get_feat(latent)
+    if mode == 'eval':
+      actor = self._task_behavior.actor(feat)
+      action = actor.mode()
+      noise = self.config.eval_noise
+    elif mode == 'explore':
+      actor = self._expl_behavior.actor(feat)
+      action = actor.sample()
+      noise = self.config.expl_noise
+    elif mode == 'train':
+      actor = self._task_behavior.actor(feat)
+      action = actor.sample()
+      noise = self.config.expl_noise
+    action = common.action_noise(action, noise, self.act_space)
+    outputs = {'action': action}
+    state = (latent, action)
+    return outputs, state
+
+  @tf.function
+  def train(self, data, state=None):
+    metrics = {}
+    state, outputs, mets = self.wm.train(data, state)
+    metrics.update(mets)
+    start = outputs['post']
+    reward = lambda seq: self.wm.heads['reward'](seq['feat']).mode()
+    metrics.update(self._task_behavior.train(
+        self.wm, start, data['is_terminal'], reward))
+    if self.config.expl_behavior != 'greedy':
+      mets = self._expl_behavior.train(start, outputs, data)[-1]
+      metrics.update({'expl_' + key: value for key, value in mets.items()})
+    return state, metrics
+
+  @tf.function
+  def report(self, data):
+    report = {}
+    data = self.wm.preprocess(data)
+    for key in self.wm.heads['decoder'].cnn_keys:
+      name = key.replace('/', '_')
+      report[f'openl_{name}'] = self.wm.video_pred(data, key)
+    return report
+
+
+class TreeQNTaskBehavior(common.Module):
+  def __init__(self, config, obs_space, act_space, tfstep):
+    self.config = config
+    self.act_space = act_space
+    self.tfstep = tfstep
+    discrete = hasattr(act_space, 'n')
+    if self.config.actor.dist == 'auto':
+      self.config = self.config.update({
+          'actor.dist': 'onehot' if discrete else 'trunc_normal'})
+    if self.config.actor_grad == 'auto':
+      self.config = self.config.update({
+          'actor_grad': 'reinforce' if discrete else 'dynamics'})
+    shared_policy_args = {
+                          "embedding_dim": 512,
+                          "use_actor_critic": False,
+                          "input_mode": 'atari',
+                          "gamma": 0.99,
+                          "predict_rewards": True,
+                          "value_aggregation": 'softmax',
+                          "td_lambda": 0.8,
+                          "normalise_state": True,
+    }
+    treeqn = functools.partial(TreeQNPolicy,
+                                   **shared_policy_args,
+                                   transition_fun_name='two_layer',
+                                   transition_nonlin='tanh',
+                                   residual_transition=True,
+                                   tree_depth=2)
+    self.treeqn = treeqn(obs_space['image'], act_space['action'], nenv=1, nsteps=-1, nstack=1)
+    self.actor = self.treeqn.actor
+
+    if self.config.slow_target:
+      self._target_treeqn = treeqn(obs_space['image'], act_space['action'], nenv=1, nsteps=-1, nstack=1)
+      self._target_critic = self._target_treeqn.critic
+      self._updates = tf.Variable(0, tf.int64)
+    else:
+      self._target_critic = self.treeqn.critic
+
+    self.treeqn_optimizer = common.Optimizer('treeqn', **self.config.actor_opt)
+    self.rewnorm = common.StreamNorm(**self.config.reward_norm)
+    self.mse = tf.keras.losses.MeanSquaredError()
+
+  def train(self, world_model, start, is_terminal, reward_fn):
+    metrics = {}
+    hor = self.config.imag_horizon
+    # The weights are is_terminal flags for the imagination start states.
+    # Technically, they should multiply the losses from the second trajectory
+    # step onwards, which is the first imagined step. However, we are not
+    # training the action that led into the first step anyway, so we can use
+    # them to scale the whole sequence.
+    seq = world_model.imagine(self.actor, start, is_terminal, hor)
+    reward = reward_fn(seq)
+    seq['reward'], mets1 = self.rewnorm(reward)
+    mets1 = {f'reward_{k}': v for k, v in mets1.items()}
+    target, mets2 = self.target(seq)
+    with tf.GradientTape() as q_tape:
+      q_loss, mets4 = self.q_loss(seq, target)
+
+    metrics.update(self.treeqn_optimizer(q_tape, q_loss, self.treeqn))
+    metrics.update(**mets1, **mets2, **mets4)
+    self.update_slow_target()  # Variables exist after first forward pass.
+    return metrics
+
+  def q_loss(self, seq, target):
+    # States:     [z0]  [z1]  [z2]   z3
+    # Rewards:    [r0]  [r1]  [r2]   r3
+    # Values:     [v0]  [v1]  [v2]   v3
+    # Weights:    [ 1]  [w1]  [w2]   w3
+    # Targets:    [t0]  [t1]  [t2]
+    # Loss:        l0    l1    l2
+    q_taken = tf.reduce_sum(
+      tf.cast(self.treeqn.q(seq['feat'][:-1]), dtype=tf.dtypes.float32) * tf.cast(tf.stop_gradient(seq['action'][:-1]), dtype=tf.dtypes.float32),
+      axis=-1
+    )
+    target = tf.stop_gradient(target)
+    weight = tf.stop_gradient(seq['weight'])
+    loss = self.mse(target * weight[:-1], q_taken)
+    metrics = {'critic': loss}
+    return loss, metrics
+
+  def target(self, seq):
+    # States:     [z0]  [z1]  [z2]  [z3]
+    # Rewards:    [r0]  [r1]  [r2]   r3
+    # Values:     [v0]  [v1]  [v2]  [v3]
+    # Discount:   [d0]  [d1]  [d2]   d3
+    # Targets:     t0    t1    t2
+    reward = tf.cast(seq['reward'], tf.float32)
+    disc = tf.cast(seq['discount'], tf.float32)
+    value = tf.cast(self._target_critic(seq['feat']), dtype=tf.dtypes.float32)
+    # Skipping last time step because it is used for bootstrapping.
+    target = common.lambda_return(
+        reward[:-1], value[:-1], disc[:-1],
+        bootstrap=value[-1],
+        lambda_=self.config.discount_lambda,
+        axis=0)
+    metrics = {}
+    metrics['value_slow'] = value.mean()
+    metrics['value_target'] = target.mean()
+    return target, metrics
+
+  def update_slow_target(self):
+    if self.config.slow_target:
+      if self._updates % self.config.slow_target_update == 0:
+        mix = 1.0 if self._updates == 0 else float(
+            self.config.slow_target_fraction)
+        for s, d in zip(self.treeqn.variables, self._target_treeqn.variables):
           d.assign(mix * s + (1 - mix) * d)
       self._updates.assign_add(1)

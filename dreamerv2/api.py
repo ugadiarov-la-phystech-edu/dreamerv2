@@ -95,7 +95,7 @@ def train(env, config, outputs=None):
     driver.reset()
 
   print('Create agent.')
-  agnt = agent.Agent(config, env.obs_space, env.act_space, step)
+  agnt = agent.TreeQNAgent(config, env.obs_space, env.act_space, step)
   dataset = iter(replay.dataset(**config.dataset))
   train_agent = common.CarryOverState(agnt.train)
   train_agent(next(dataset))
