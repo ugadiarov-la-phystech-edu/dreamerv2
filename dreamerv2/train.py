@@ -46,15 +46,17 @@ def main():
   import tensorflow as tf
   tf.config.experimental_run_functions_eagerly(not config.jit)
   message = 'No GPU found. To actually train on CPU remove this assert.'
-  assert tf.config.experimental.list_physical_devices('GPU'), message
+  #assert tf.config.experimental.list_physical_devices('GPU'), message
   for gpu in tf.config.experimental.list_physical_devices('GPU'):
     tf.config.experimental.set_memory_growth(gpu, True)
   assert config.precision in (16, 32), config.precision
   if config.precision == 16:
-    from tensorflow.keras.mixed_precision import experimental as prec
-    prec.set_policy(prec.Policy('mixed_float16'))
-    # import tensorflow.keras.mixed_precision as prec
-    # prec.set_global_policy(prec.Policy('mixed_float16'))
+    try:
+      from tensorflow.keras.mixed_precision import experimental as prec
+      prec.set_policy(prec.Policy('mixed_float16'))
+    except ImportError:
+      import tensorflow.keras.mixed_precision as prec
+      prec.set_global_policy(prec.Policy('mixed_float16'))
 
   train_replay = common.Replay(logdir / 'train_episodes', **config.replay)
   eval_replay = common.Replay(logdir / 'eval_episodes', **dict(

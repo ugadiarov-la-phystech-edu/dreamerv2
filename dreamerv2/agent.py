@@ -1,8 +1,10 @@
 import functools
 
 import tensorflow as tf
-from tensorflow.keras.mixed_precision import experimental as prec
-#import tensorflow.keras.mixed_precision as prec
+try:
+  from tensorflow.keras.mixed_precision import experimental as prec
+except ImportError:
+  import tensorflow.keras.mixed_precision as prec
 
 import common
 import expl
@@ -444,6 +446,7 @@ class TreeQNTaskBehavior(common.Module):
 
     if self.config.slow_target:
       self._target_treeqn = treeqn(obs_space['image'], act_space['action'], nenv=1, nsteps=-1, nstack=1)
+      self._target_treeqn.trainable = False
       self._target_critic = self._target_treeqn.critic
       self._updates = tf.Variable(0, tf.int64)
     else:
@@ -519,3 +522,4 @@ class TreeQNTaskBehavior(common.Module):
         for s, d in zip(self.treeqn.variables, self._target_treeqn.variables):
           d.assign(mix * s + (1 - mix) * d)
       self._updates.assign_add(1)
+      self._target_treeqn.trainable = False

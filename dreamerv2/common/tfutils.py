@@ -4,7 +4,11 @@ import re
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import mixed_precision as prec
+
+try:
+  from tensorflow.keras.mixed_precision import experimental as prec
+except ImportError:
+  import tensorflow.keras.mixed_precision as prec
 
 try:
   from tensorflow.python.distribute import values
@@ -66,7 +70,7 @@ class Optimizer(tf.Module):
 
   def __init__(
       self, name, lr, eps=1e-4, clip=None, wd=None,
-      opt='adam', wd_pattern=r'.*'):
+      opt='adam', wd_pattern=r'.*', rho=None):
     assert 0 <= wd < 1
     assert not clip or 1 <= clip
     self._name = name
@@ -79,6 +83,7 @@ class Optimizer(tf.Module):
         'adamax': lambda: tf.optimizers.Adamax(lr, epsilon=eps),
         'sgd': lambda: tf.optimizers.SGD(lr),
         'momentum': lambda: tf.optimizers.SGD(lr, 0.9),
+        'rmsprop': lambda: tf.optimizers.RMSprop(learning_rate=lr, rho=rho, epsilon=eps)
     }[opt]()
     self._mixed = (prec.global_policy().compute_dtype == tf.float16)
     if self._mixed:

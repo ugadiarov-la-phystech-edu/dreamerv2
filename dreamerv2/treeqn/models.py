@@ -60,11 +60,10 @@ class TreeQNPolicy(keras.Model):
             self.tree_reward_fun = MLPRewardFn(embedding_dim, self.num_actions)
 
         self.tree_depth = tree_depth
+        self.batch_size = 128
 
     def q(self, ob):
         shape = ob.shape
-        ob = tf.reshape(ob, shape=(-1, shape[-1]))
-
         return tf.reshape(self(tf.reshape(ob, shape=(-1, shape[-1])))[0], shape=(*shape[:2], -1))
 
     def actor(self, ob):
@@ -74,7 +73,7 @@ class TreeQNPolicy(keras.Model):
         shape = ob.shape
         return tf.reshape(self(tf.reshape(ob, shape=(-1, shape[-1])))[1], shape=shape[:2])
 
-    def call(self, ob):
+    def call(self, observations):
         """
         :param ob: [batch_size x channels x height x width]
         :return: [batch_size x num_actions], -- Q-values
@@ -83,15 +82,21 @@ class TreeQNPolicy(keras.Model):
                  [batch_size x num_actions] -- rewards after first transition
         """
 
-        st = self.embed_obs(ob)
+        Qs = []
+        Vs = []
+        for i in range(0, observations.shape[0], self.batch_size):
+            ob = observations[i:i + self.batch_size]
+            st = self.embed_obs(ob)
 
-        if self.normalise_state:
-            st = st / tf.sqrt(tf.reduce_sum(tf.pow(st, 2), axis=-1, keepdims=True))
+            if self.normalise_state:
+                st = st / tf.sqrt(tf.reduce_sum(tf.pow(st, 2), axis=-1, keepdims=True))
 
-        Q, tree_result = self.planning(st)
-        V = tf.reduce_max(Q, axis=1)
+            Q, tree_result = self.planning(st)
+            V = tf.reduce_max(Q, axis=1)
+            Qs.append(Q)
+            Vs.append(V)
 
-        return Q, V, tree_result
+        return tf.concat(Qs, axis=0), tf.concat(Vs, axis=0), tree_result
 
     def embed_obs(self, ob):
         st = self.embed(ob)
