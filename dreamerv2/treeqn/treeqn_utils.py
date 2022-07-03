@@ -13,7 +13,6 @@ def discount_with_dones(rewards, dones, gamma):
     return discounted[::-1]
 
 
-@tf.function
 def make_seq_mask(mask):
     max_i = tf.argmax(mask, axis=0)
     if tf.reduce_all(mask[max_i] == 1):
@@ -22,7 +21,6 @@ def make_seq_mask(mask):
 
 
 # some utilities for interpreting the trees we return
-@tf.function
 def build_sequences(sequences, masks, nenvs, nsteps, depth, return_mask=False, offset=0):
     # sequences are bs x size, containing e.g. rewards, actions, state reps
     # returns bs x depth x size processed sequences with a sliding window set by 'depth', padded with 0's
