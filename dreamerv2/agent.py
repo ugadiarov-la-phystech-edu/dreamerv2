@@ -1,3 +1,4 @@
+import collections
 import functools
 
 import tensorflow as tf
@@ -455,6 +456,7 @@ class TreeQNTaskBehavior(common.Module):
     self.treeqn_optimizer = common.Optimizer('treeqn', **self.config.actor_opt)
     self.rewnorm = common.StreamNorm(**self.config.reward_norm)
     self.mse = tf.keras.losses.MeanSquaredError()
+    self.batch_size = 16
 
   def train(self, world_model, start, is_terminal, reward_fn):
     metrics = {}
@@ -471,16 +473,40 @@ class TreeQNTaskBehavior(common.Module):
     seq['reward'], mets1 = self.rewnorm(reward)
     mets1 = {f'reward_{k}': v for k, v in mets1.items()}
     target, mets2 = self.target(seq)
-    for key in 'reward', 'discount':
-      del seq[key]
-    with tf.GradientTape() as q_tape:
-      q_loss, mets4 = self.q_loss(seq, target)
+    target = target.numpy()
+    feat = seq['feat'].numpy()
+    action = seq['action'].numpy()
+    weight = seq['weight'].numpy()
 
     for key in list(seq.keys()):
       del seq[key]
 
-    metrics.update(self.treeqn_optimizer(q_tape, q_loss, self.treeqn))
-    metrics.update(**mets1, **mets2, **mets4)
+    mets4 = collections.defaultdict(float)
+    mets5 = collections.defaultdict(float)
+    n = 0
+    for i in range(0, feat.shape[1], self.batch_size):
+      n += 1
+      seq_batch = {
+        'feat': tf.convert_to_tensor(feat[:, i:i + self.batch_size, :]),
+        'action': tf.convert_to_tensor(action[:, i:i + self.batch_size, :]),
+        'weight': tf.convert_to_tensor(weight[:, i:i + self.batch_size])
+      }
+      target_batch = tf.convert_to_tensor(target[:, i:i + self.batch_size])
+
+      with tf.GradientTape() as q_tape:
+        q_loss, mets4_batch = self.q_loss(seq_batch, target_batch)
+
+      for key, value in mets4_batch.items():
+        mets4[key] += value
+      for key, value in self.treeqn_optimizer(q_tape, q_loss, self.treeqn).items():
+        mets5[key] += value
+
+    for key in mets4.keys():
+      mets4[key] /= n
+    for key in mets5.keys():
+      mets5[key] /= n
+
+    metrics.update(**mets1, **mets2, **mets4, **mets5)
     self.update_slow_target()  # Variables exist after first forward pass.
     return metrics
 
