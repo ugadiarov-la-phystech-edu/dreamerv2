@@ -465,12 +465,19 @@ class TreeQNTaskBehavior(common.Module):
     # training the action that led into the first step anyway, so we can use
     # them to scale the whole sequence.
     seq = world_model.imagine(self.actor, start, is_terminal, hor)
+    for key in 'logit', 'stoch', 'deter':
+      del seq[key]
     reward = reward_fn(seq)
     seq['reward'], mets1 = self.rewnorm(reward)
     mets1 = {f'reward_{k}': v for k, v in mets1.items()}
     target, mets2 = self.target(seq)
+    for key in 'reward', 'discount':
+      del seq[key]
     with tf.GradientTape() as q_tape:
       q_loss, mets4 = self.q_loss(seq, target)
+
+    for key in list(seq.keys()):
+      del seq[key]
 
     metrics.update(self.treeqn_optimizer(q_tape, q_loss, self.treeqn))
     metrics.update(**mets1, **mets2, **mets4)

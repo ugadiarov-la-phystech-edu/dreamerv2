@@ -127,6 +127,7 @@ class Optimizer(tf.Module):
       grads = context.all_reduce('mean', grads)
 
     # Gradient clipping.
+    grads = [grad if grad.dtype == tf.float32 else tf.cast(grad, dtype=tf.float32) for grad in grads]
     norm = tf.linalg.global_norm(grads)
     if not self._mixed:
       tf.debugging.check_numerics(norm, self._name + '_norm')
@@ -137,6 +138,10 @@ class Optimizer(tf.Module):
     # Weight decay.
     if self._wd:
       self._apply_weight_decay(varibs)
+
+    for i, (grad, variable) in enumerate(zip(grads, varibs)):
+      if grad.dtype != variable.dtype:
+        grads[i] = tf.cast(grad, dtype=variable.dtype)
 
     # Apply gradients.
     self._opt.apply_gradients(
