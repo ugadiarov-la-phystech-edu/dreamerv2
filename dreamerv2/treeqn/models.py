@@ -60,7 +60,7 @@ class TreeQNPolicy(keras.Model):
             self.tree_reward_fun = MLPRewardFn(embedding_dim, self.num_actions)
 
         self.tree_depth = tree_depth
-        self.batch_size = 128
+        self.batch_size = 32
 
     def q(self, ob):
         shape = ob.shape
@@ -160,22 +160,27 @@ class TreeQNPolicy(keras.Model):
 
         return tree_result
 
-    def tree_transitioning(self, x):
+    def tree_transitioning(self, state):
         """
         :param x: [? x embedding_dim]
         :return: [? x num_actions x embedding_dim]
         """
-        x1 = self.transition_nonlin(self.transition_fun1(x))
-        x2 = x + x1
-        x2 = tf.expand_dims(x2, axis=1)
-        x3 = self.transition_nonlin(tf.einsum("ij,jab->iba", x, self.transition_fun2))
-        x2 = tf.repeat(x2, repeats=x3.shape[1], axis=1)
-        next_state = x2 + x3
+        next_state = []
+        for i in range(0, state.shape[0], self.batch_size):
+            x = state[i:i + self.batch_size]
+            x1 = self.transition_nonlin(self.transition_fun1(x))
+            x2 = x + x1
+            x2 = tf.expand_dims(x2, axis=1)
+            x3 = self.transition_nonlin(tf.einsum("ij,jab->iba", x, self.transition_fun2))
+            x2 = tf.repeat(x2, repeats=x3.shape[1], axis=1)
+            next_x = x2 + x3
 
-        if self.normalise_state:
-            next_state = next_state / tf.sqrt(tf.reduce_sum(tf.pow(next_state, 2), axis=-1, keepdims=True))
+            if self.normalise_state:
+                next_x = next_x / tf.sqrt(tf.reduce_sum(tf.pow(next_x, 2), axis=-1, keepdims=True))
 
-        return next_state
+            next_state.append(next_x)
+
+        return tf.concat(next_state, axis=0)
 
     def planning(self, x):
         """
