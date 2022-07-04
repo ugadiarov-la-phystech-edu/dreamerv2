@@ -9,6 +9,11 @@ import keras.initializers as initializers
 from dreamerv2.common import OneHotDist
 from dreamerv2.treeqn.transitions import build_transition_fn, MLPRewardFn
 
+try:
+  from tensorflow.keras.mixed_precision import experimental as prec
+except ImportError:
+  import tensorflow.keras.mixed_precision as prec
+
 
 class TreeQNPolicy(keras.Model):
     def __init__(self,
@@ -60,17 +65,20 @@ class TreeQNPolicy(keras.Model):
             self.tree_reward_fun = MLPRewardFn(embedding_dim, self.num_actions)
 
         self.tree_depth = tree_depth
-        self.batch_size = 32
+        self.batch_size = -1
 
     def q(self, ob):
         shape = ob.shape
+        ob = tf.cast(ob, prec.global_policy().compute_dtype)
         return tf.reshape(self(tf.reshape(ob, shape=(-1, shape[-1])))[0], shape=(*shape[:2], -1))
 
     def actor(self, ob):
+        ob = tf.cast(ob, prec.global_policy().compute_dtype)
         return OneHotDist(logits=self(ob)[0], dtype=tf.dtypes.int32)
 
     def critic(self, ob):
         shape = ob.shape
+        ob = tf.cast(ob, prec.global_policy().compute_dtype)
         return tf.reshape(self(tf.reshape(ob, shape=(-1, shape[-1])))[1], shape=shape[:2])
 
     def call(self, observations):
@@ -81,22 +89,28 @@ class TreeQNPolicy(keras.Model):
                  [batch_size x num_actions x embedding_dim], -- embeddings after first transition
                  [batch_size x num_actions] -- rewards after first transition
         """
+        if self.batch_size <= 0:
+            return self.call_batch(observations)
 
         Qs = []
         Vs = []
         for i in range(0, observations.shape[0], self.batch_size):
-            ob = observations[i:i + self.batch_size]
-            st = self.embed_obs(ob)
-
-            if self.normalise_state:
-                st = st / tf.sqrt(tf.reduce_sum(tf.pow(st, 2), axis=-1, keepdims=True))
-
-            Q, tree_result = self.planning(st)
-            V = tf.reduce_max(Q, axis=1)
+            Q, V, tree_result = self.call_batch(observations[i:i + self.batch_size])
             Qs.append(Q)
             Vs.append(V)
 
         return tf.concat(Qs, axis=0), tf.concat(Vs, axis=0), tree_result
+
+    def call_batch(self, observation_batch):
+        st = self.embed_obs(observation_batch)
+
+        if self.normalise_state:
+            st = st / tf.sqrt(tf.reduce_sum(tf.pow(st, 2), axis=-1, keepdims=True))
+
+        Q, tree_result = self.planning(st)
+        V = tf.reduce_max(Q, axis=1)
+
+        return Q, V, tree_result
 
     def embed_obs(self, ob):
         st = self.embed(ob)
@@ -165,22 +179,31 @@ class TreeQNPolicy(keras.Model):
         :param x: [? x embedding_dim]
         :return: [? x num_actions x embedding_dim]
         """
+        if self.batch_size <= 0:
+            return self.tree_transitioning_batch(state)
+
         next_state = []
         for i in range(0, state.shape[0], self.batch_size):
-            x = state[i:i + self.batch_size]
-            x1 = self.transition_nonlin(self.transition_fun1(x))
-            x2 = x + x1
-            x2 = tf.expand_dims(x2, axis=1)
-            x3 = self.transition_nonlin(tf.einsum("ij,jab->iba", x, self.transition_fun2))
-            x2 = tf.repeat(x2, repeats=x3.shape[1], axis=1)
-            next_x = x2 + x3
-
-            if self.normalise_state:
-                next_x = next_x / tf.sqrt(tf.reduce_sum(tf.pow(next_x, 2), axis=-1, keepdims=True))
-
-            next_state.append(next_x)
+            next_state.append(self.tree_transitioning_batch(state[i:i + self.batch_size]))
 
         return tf.concat(next_state, axis=0)
+
+    def tree_transitioning_batch(self, x):
+        """
+        :param x: [? x embedding_dim]
+        :return: [? x num_actions x embedding_dim]
+        """
+        x1 = self.transition_nonlin(self.transition_fun1(x))
+        x2 = x + x1
+        x2 = tf.expand_dims(x2, axis=1)
+        x3 = self.transition_nonlin(tf.einsum("ij,jab->iba", x, self.transition_fun2))
+        x2 = tf.repeat(x2, repeats=x3.shape[1], axis=1)
+        next_state = x2 + x3
+
+        if self.normalise_state:
+            next_state = next_state / tf.sqrt(tf.reduce_sum(tf.pow(next_state, 2), axis=-1, keepdims=True))
+
+        return next_state
 
     def planning(self, x):
         """
