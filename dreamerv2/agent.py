@@ -391,10 +391,15 @@ class TreeQNAgent(common.Module):
     return outputs, state
 
   @tf.function
-  def train(self, data, state=None):
+  def train_wm(self, data, state=None):
     metrics = {}
     state, outputs, mets = self.wm.train(data, state)
     metrics.update(mets)
+
+    return state, outputs, metrics
+
+  def train(self, data, state=None):
+    state, outputs, metrics = self.train_wm(data, state)
     start = outputs['post']
     reward = lambda seq: self.wm.heads['reward'](seq['feat']).mode()
     metrics.update(self._task_behavior.train(
@@ -467,44 +472,45 @@ class TreeQNTaskBehavior(common.Module):
     # training the action that led into the first step anyway, so we can use
     # them to scale the whole sequence.
     seq = world_model.imagine(self.actor, start, is_terminal, hor)
-    for key in 'logit', 'stoch', 'deter':
-      del seq[key]
-    reward = reward_fn(seq)
-    seq['reward'], mets1 = self.rewnorm(reward)
-    mets1 = {f'reward_{k}': v for k, v in mets1.items()}
-    target, mets2 = self.target(seq)
-    target = target.numpy()
     feat = seq['feat'].numpy()
     action = seq['action'].numpy()
     weight = seq['weight'].numpy()
-
+    discount = seq['discount'].numpy()
     for key in list(seq.keys()):
       del seq[key]
-
+    del seq
+    mets1 = collections.defaultdict(float)
+    mets2 = collections.defaultdict(float)
     mets4 = collections.defaultdict(float)
     mets5 = collections.defaultdict(float)
     n = 0
     for i in range(0, feat.shape[1], self.batch_size):
       n += 1
-      seq_batch = {
-        'feat': tf.convert_to_tensor(feat[:, i:i + self.batch_size, :]),
-        'action': tf.convert_to_tensor(action[:, i:i + self.batch_size, :]),
-        'weight': tf.convert_to_tensor(weight[:, i:i + self.batch_size])
-      }
-      target_batch = tf.convert_to_tensor(target[:, i:i + self.batch_size])
+      seq_batch = {'feat': tf.convert_to_tensor(feat[:, i:i + self.batch_size, :])}
+      seq_batch['reward'], mets1_batch = self.rewnorm(reward_fn(seq_batch))
+      mets1_batch = {f'reward_{k}': v for k, v in mets1_batch.items()}
+      seq_batch['discount'] = tf.convert_to_tensor(discount[:, i:i + self.batch_size])
+      target_batch, mets2_batch = self.target(seq_batch)
+
+      del seq_batch['reward']
+      del seq_batch['discount']
+      seq_batch['action'] = tf.convert_to_tensor(action[:, i:i + self.batch_size, :])
+      seq_batch['weight'] = tf.convert_to_tensor(weight[:, i:i + self.batch_size])
 
       with tf.GradientTape() as q_tape:
         q_loss, mets4_batch = self.q_loss(seq_batch, target_batch)
 
-      for key, value in mets4_batch.items():
-        mets4[key] += value
-      for key, value in self.treeqn_optimizer(q_tape, q_loss, self.treeqn).items():
-        mets5[key] += value
+      for key in list(seq_batch.keys()):
+        del seq_batch[key]
 
-    for key in mets4.keys():
-      mets4[key] /= n
-    for key in mets5.keys():
-      mets5[key] /= n
+      mets5_batch = self.treeqn_optimizer(q_tape, q_loss, self.treeqn)
+      for mets_batch, mets in zip([mets1_batch, mets2_batch, mets4_batch, mets5_batch], [mets1, mets2, mets4, mets5]):
+        for key, value in mets_batch.items():
+          mets[key] += value
+
+    for mets in [mets1, mets2, mets4, mets5]:
+      for key in mets.keys():
+        mets[key] /= n
 
     metrics.update(**mets1, **mets2, **mets4, **mets5)
     self.update_slow_target()  # Variables exist after first forward pass.
