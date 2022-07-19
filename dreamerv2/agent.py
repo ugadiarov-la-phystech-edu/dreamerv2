@@ -1,5 +1,9 @@
 import tensorflow as tf
-from tensorflow.keras import mixed_precision as prec
+
+try:
+  from tensorflow.keras.mixed_precision import experimental as prec
+except ImportError:
+  import tensorflow.keras.mixed_precision as prec
 
 import common
 import expl
@@ -216,9 +220,9 @@ class ActorCritic(common.Module):
       self.config = self.config.update({
           'actor_grad': 'reinforce' if discrete else 'dynamics'})
     self.actor = common.MLP(act_space.shape[0], **self.config.actor)
-    self.critic = common.MLP([], **self.config.critic)
+    self.critic = common.MLP(act_space.shape[0], **self.config.critic)
     if self.config.slow_target:
-      self._target_critic = common.MLP([], **self.config.critic)
+      self._target_critic = common.MLP(act_space.shape[0], **self.config.critic)
       self._updates = tf.Variable(0, tf.int64)
     else:
       self._target_critic = self.critic
@@ -267,6 +271,10 @@ class ActorCritic(common.Module):
     policy = self.actor(tf.stop_gradient(seq['feat'][:-2]))
     if self.config.actor_grad == 'dynamics':
       objective = target[1:]
+    elif self.config.actor_grad == 'mac':
+      q_values = tf.stop_gradient(self.critic(seq['feat'][:-2]).mode())
+      policy_prob = self.actor.get_softmax(tf.stop_gradient(seq['feat'][:-2]))
+      objective = tf.reduce_sum(policy_prob * q_values, axis=-1)
     elif self.config.actor_grad == 'reinforce':
       baseline = self._target_critic(seq['feat'][:-2]).mode()
       advantage = tf.stop_gradient(target[1:] - baseline)
@@ -298,9 +306,10 @@ class ActorCritic(common.Module):
     # Targets:    [t0]  [t1]  [t2]
     # Loss:        l0    l1    l2
     dist = self.critic(seq['feat'][:-1])
-    target = tf.stop_gradient(target)
+    action = tf.stop_gradient(seq['action'][1:])
+    target = tf.repeat(tf.expand_dims(tf.stop_gradient(target), axis=-1), repeats=action.shape[-1], axis=-1)
     weight = tf.stop_gradient(seq['weight'])
-    critic_loss = -(dist.log_prob(target) * weight[:-1]).mean()
+    critic_loss = -(tf.reduce_sum(dist.log_prob(target) * action, axis=-1) * weight[:-1]).mean()
     metrics = {'critic': dist.mode().mean()}
     return critic_loss, metrics
 
@@ -312,7 +321,9 @@ class ActorCritic(common.Module):
     # Targets:     t0    t1    t2
     reward = tf.cast(seq['reward'], tf.float32)
     disc = tf.cast(seq['discount'], tf.float32)
-    value = self._target_critic(seq['feat']).mode()
+    q_value = self._target_critic(seq['feat']).mode()
+    policy_prob = tf.stop_gradient(self.actor.get_softmax(seq['feat']))
+    value = tf.reduce_sum(policy_prob * q_value, axis=-1)
     # Skipping last time step because it is used for bootstrapping.
     target = common.lambda_return(
         reward[:-1], value[:-1], disc[:-1],

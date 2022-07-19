@@ -4,7 +4,11 @@ import re
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import mixed_precision as prec
+
+try:
+  from tensorflow.keras.mixed_precision import experimental as prec
+except ImportError:
+  import tensorflow.keras.mixed_precision as prec
 
 try:
   from tensorflow.python.distribute import values

@@ -4,7 +4,11 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers as tfkl
 from tensorflow_probability import distributions as tfd
-from tensorflow.keras.mixed_precision import experimental as prec
+
+try:
+  from tensorflow.keras.mixed_precision import experimental as prec
+except ImportError:
+  import tensorflow.keras.mixed_precision as prec
 
 import common
 
@@ -302,6 +306,7 @@ class MLP(common.Module):
     self._norm = norm
     self._act = get_act(act)
     self._out = out
+    self._softmax = False
 
   def __call__(self, features):
     x = tf.cast(features, prec.global_policy().compute_dtype)
@@ -311,7 +316,19 @@ class MLP(common.Module):
       x = self.get(f'norm{index}', NormLayer, self._norm)(x)
       x = self._act(x)
     x = x.reshape(features.shape[:-1] + [x.shape[-1]])
-    return self.get('out', DistLayer, self._shape, **self._out)(x)
+    layer = self.get('out', DistLayer, self._shape, **self._out)
+    old_softmax = layer._softmax
+    layer._softmax = self._softmax
+    x = layer(x)
+    layer._softmax = old_softmax
+    return x
+
+  def get_softmax(self, features):
+    self._softmax = True
+    x = self(features)
+    self._softmax = False
+
+    return x
 
 
 class GRUCell(tf.keras.layers.AbstractRNNCell):
@@ -355,18 +372,22 @@ class DistLayer(common.Module):
     self._dist = dist
     self._min_std = min_std
     self._init_std = init_std
+    self._softmax = False
 
   def __call__(self, inputs):
     out = self.get('out', tfkl.Dense, np.prod(self._shape))(inputs)
     out = tf.reshape(out, tf.concat([tf.shape(inputs)[:-1], self._shape], 0))
     out = tf.cast(out, tf.float32)
+    if self._softmax:
+      return tf.nn.softmax(out, axis=-1)
+
     if self._dist in ('normal', 'tanh_normal', 'trunc_normal'):
       std = self.get('std', tfkl.Dense, np.prod(self._shape))(inputs)
       std = tf.reshape(std, tf.concat([tf.shape(inputs)[:-1], self._shape], 0))
       std = tf.cast(std, tf.float32)
     if self._dist == 'mse':
       dist = tfd.Normal(out, 1.0)
-      return tfd.Independent(dist, len(self._shape))
+      return tfd.Independent(dist, 0) #len(self._shape))
     if self._dist == 'normal':
       dist = tfd.Normal(out, std)
       return tfd.Independent(dist, len(self._shape))

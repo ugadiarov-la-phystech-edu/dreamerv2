@@ -56,7 +56,7 @@ defaults:
   discount: 0.99
   discount_lambda: 0.95
   imag_horizon: 15
-  actor_grad: auto
+  actor_grad: mac
   actor_grad_mix: 0.1
   actor_ent: 2e-3
   slow_target: True
